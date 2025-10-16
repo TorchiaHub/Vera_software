@@ -1,22 +1,62 @@
 {
-  "productName": "VERA",
-  "version": "1.0.0", 
-  "identifier": "com.vera.app",
+  "$schema": "https://schema.tauri.app/config/2.0.0",
+  "productName": "VERA Environmental Awareness",
+  "version": "2.0.0",
+  "identifier": "com.vera.environmental",
   "build": {
-    "frontendDist": "../dist",
-    "devUrl": "http://localhost:3000",
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "frontendDist": "../frontend/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev:frontend",
+    "beforeBuildCommand": "npm run build:frontend"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "VERA - Environmental Awareness",
-        "width": 900,
-        "height": 600,
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "transparent": false,
+        "maximizable": true,
+        "minimizable": true,
+        "closable": true
       }
-    ]
-  }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' ws://localhost:* http://localhost:* https://api.vera.com"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/16x16.png",
+      "icons/24x24.png", 
+      "icons/32x32.png",
+      "icons/48x48.png",
+      "icons/64x64.png",
+      "icons/96x96.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/256x256.png",
+      "icons/512x512.png",
+      "icons/icon.ico",
+      "icons/icon.icns"
+    ],
+    "publisher": "VERA Environmental Team",
+    "category": "Productivity",
+    "shortDescription": "Environmental awareness and energy monitoring application",
+    "longDescription": "VERA is a comprehensive environmental awareness application that monitors energy consumption, provides insights, and helps users reduce their carbon footprint through intelligent system monitoring and gamified sustainability features.",
+    "copyright": "Copyright (c) 2025 VERA Environmental Team",
+    "license": "MIT"
+  },
+  "plugins": {}
 }

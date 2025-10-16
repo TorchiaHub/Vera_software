@@ -8,6 +8,23 @@ yarn-error.log*
 dist/
 build/
 target/
+*.exe
+*.msi
+*.app
+*.dmg
+*.deb
+*.rpm
+bundle/
+*.zip
+
+# Tauri specific
+src-tauri/target/
+src-tauri/gen/
+
+# Installer files
+*.nsi
+*.sed
+LICENSE.txt
 
 # Environment variables
 .env

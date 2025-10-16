@@ -1,0 +1,380 @@
+name: Nightly - Maintenance
+
+on:
+  schedule:
+    # Run every night at 2:00 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # Job 1: Health checks
+  health-check:
+    name: Production Health Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check production health
+        id: health
+        run: |
+          echo "Checking production health..."
+          
+          # API health check
+          API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.PRODUCTION_URL }}/health || echo "000")
+          
+          # Frontend health check
+          FRONTEND_STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.PRODUCTION_URL }} || echo "000")
+          
+          # Database connectivity check
+          DB_STATUS=$(curl -s -o /dev/null -w "%{http_code}" ${{ secrets.PRODUCTION_URL }}/api/health/db || echo "000")
+          
+          echo "api_status=$API_STATUS" >> $GITHUB_OUTPUT
+          echo "frontend_status=$FRONTEND_STATUS" >> $GITHUB_OUTPUT
+          echo "db_status=$DB_STATUS" >> $GITHUB_OUTPUT
+          
+          if [ "$API_STATUS" != "200" ] || [ "$FRONTEND_STATUS" != "200" ] || [ "$DB_STATUS" != "200" ]; then
+            echo "health_check=failed" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "health_check=passed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Alert on health check failure
+        if: failure()
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          text: |
+            🚨 **Production Health Check Failed!**
+            
+            **API Status:** ${{ steps.health.outputs.api_status }}
+            **Frontend Status:** ${{ steps.health.outputs.frontend_status }}
+            **Database Status:** ${{ steps.health.outputs.db_status }}
+            
+            **Time:** $(date)
+            **Action:** Immediate investigation required
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # Job 2: Database maintenance
+  database-maintenance:
+    name: Database Maintenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: health-check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd backend
+          npm ci
+
+      - name: Database backup
+        run: |
+          cd backend
+          npm run db:backup:production
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKUP_STORAGE_URL: ${{ secrets.BACKUP_STORAGE_URL }}
+
+      - name: Database cleanup
+        run: |
+          cd backend
+          npm run db:cleanup:old-data
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Database optimization
+        run: |
+          cd backend
+          npm run db:optimize
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Generate database health report
+        run: |
+          cd backend
+          npm run db:health-report
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+  # Job 3: Performance monitoring
+  performance-monitoring:
+    name: Performance Monitoring
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: health-check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run comprehensive performance audit
+        run: |
+          npm install -g @lhci/cli@0.12.x
+          lhci autorun --config=.lighthouserc.js
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+          TARGET_URL: ${{ secrets.PRODUCTION_URL }}
+
+      - name: Load testing
+        run: |
+          npm run test:load:production
+        env:
+          PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
+          LOAD_TEST_USERS: 100
+          LOAD_TEST_DURATION: 300
+
+      - name: Generate performance report
+        run: |
+          node scripts/generate-performance-report.js
+        env:
+          PRODUCTION_URL: ${{ secrets.PRODUCTION_URL }}
+
+      - name: Upload performance artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-report-${{ github.run_number }}
+          path: |
+            reports/performance/
+            reports/lighthouse/
+          retention-days: 30
+
+  # Job 4: Security scanning
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: health-check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: OWASP ZAP security scan
+        uses: zaproxy/action-full-scan@v0.7.0
+        with:
+          target: ${{ secrets.PRODUCTION_URL }}
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j'
+
+      - name: Dependency vulnerability scan
+        run: |
+          npm audit --audit-level=moderate
+          npm run security:scan
+
+      - name: Container security scan
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image ${{ secrets.DOCKER_USERNAME }}/vera-environmental-awareness:latest
+
+      - name: Generate security report
+        run: |
+          node scripts/generate-security-report.js
+
+      - name: Upload security artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-report-${{ github.run_number }}
+          path: reports/security/
+          retention-days: 90
+
+  # Job 5: Log analysis
+  log-analysis:
+    name: Log Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: health-check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download production logs
+        run: |
+          mkdir -p logs/production
+          # Download logs from production server
+          curl -H "Authorization: Bearer ${{ secrets.LOG_API_TOKEN }}" \
+            "${{ secrets.LOG_API_URL }}/api/logs/download?hours=24" \
+            -o logs/production/app-$(date +%Y%m%d).log
+
+      - name: Analyze error patterns
+        run: |
+          node scripts/analyze-logs.js
+        env:
+          LOG_PATH: logs/production
+
+      - name: Generate log analysis report
+        run: |
+          node scripts/generate-log-report.js
+
+      - name: Alert on critical errors
+        run: |
+          CRITICAL_ERRORS=$(grep -c "CRITICAL\|FATAL" logs/production/*.log || echo "0")
+          if [ "$CRITICAL_ERRORS" -gt "0" ]; then
+            echo "Found $CRITICAL_ERRORS critical errors in the last 24 hours"
+            exit 1
+          fi
+
+      - name: Upload log analysis
+        uses: actions/upload-artifact@v3
+        with:
+          name: log-analysis-${{ github.run_number }}
+          path: reports/logs/
+          retention-days: 30
+
+  # Job 6: Cleanup and optimization
+  cleanup:
+    name: Cleanup and Optimization
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [database-maintenance, performance-monitoring, security-scan, log-analysis]
+    if: always()
+
+    steps:
+      - name: Cleanup old artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            
+            // Get all artifacts
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner,
+              repo,
+              per_page: 100
+            });
+            
+            // Delete artifacts older than 30 days
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            
+            for (const artifact of artifacts.data.artifacts) {
+              const createdAt = new Date(artifact.created_at);
+              if (createdAt < thirtyDaysAgo) {
+                await github.rest.actions.deleteArtifact({
+                  owner,
+                  repo,
+                  artifact_id: artifact.id
+                });
+                console.log(`Deleted artifact: ${artifact.name}`);
+              }
+            }
+
+      - name: Cleanup old workflow runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            
+            // Get workflow runs older than 90 days
+            const ninetyDaysAgo = new Date();
+            ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+            
+            const workflows = await github.rest.actions.listWorkflowRunsForRepo({
+              owner,
+              repo,
+              per_page: 100,
+              created: `<${ninetyDaysAgo.toISOString()}`
+            });
+            
+            for (const run of workflows.data.workflow_runs) {
+              if (run.status === 'completed') {
+                await github.rest.actions.deleteWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: run.id
+                });
+                console.log(`Deleted workflow run: ${run.id}`);
+              }
+            }
+
+      - name: Docker cleanup on production server
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.PRODUCTION_HOST }}
+          username: ${{ secrets.PRODUCTION_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          script: |
+            # Cleanup unused Docker images
+            docker system prune -f
+            docker image prune -a -f --filter "until=168h"
+            
+            # Cleanup old logs
+            find /var/log/vera -name "*.log" -mtime +30 -delete
+            
+            # Cleanup temporary files
+            find /tmp -name "vera-*" -mtime +7 -delete
+
+  # Job 7: Generate maintenance report
+  generate-report:
+    name: Generate Maintenance Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [health-check, database-maintenance, performance-monitoring, security-scan, log-analysis, cleanup]
+    if: always()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Generate comprehensive maintenance report
+        run: |
+          node scripts/generate-maintenance-report.js
+        env:
+          HEALTH_STATUS: ${{ needs.health-check.result }}
+          DB_MAINTENANCE_STATUS: ${{ needs.database-maintenance.result }}
+          PERFORMANCE_STATUS: ${{ needs.performance-monitoring.result }}
+          SECURITY_STATUS: ${{ needs.security-scan.result }}
+          LOG_ANALYSIS_STATUS: ${{ needs.log-analysis.result }}
+          CLEANUP_STATUS: ${{ needs.cleanup.result }}
+
+      - name: Upload maintenance report
+        uses: actions/upload-artifact@v3
+        with:
+          name: maintenance-report-${{ github.run_number }}
+          path: reports/maintenance/
+          retention-days: 365
+
+      - name: Send maintenance summary
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: |
+            📊 **Nightly Maintenance Report - $(date +"%Y-%m-%d")**
+            
+            **Health Check:** ${{ needs.health-check.result == 'success' && '✅ Passed' || '❌ Failed' }}
+            **Database Maintenance:** ${{ needs.database-maintenance.result == 'success' && '✅ Completed' || '❌ Failed' }}
+            **Performance Monitoring:** ${{ needs.performance-monitoring.result == 'success' && '✅ Completed' || '❌ Failed' }}
+            **Security Scan:** ${{ needs.security-scan.result == 'success' && '✅ Completed' || '❌ Failed' }}
+            **Log Analysis:** ${{ needs.log-analysis.result == 'success' && '✅ Completed' || '❌ Failed' }}
+            **Cleanup:** ${{ needs.cleanup.result == 'success' && '✅ Completed' || '❌ Failed' }}
+            
+            **Full Report:** https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

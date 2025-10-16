@@ -1,0 +1,352 @@
+name: PR Preview - Deploy Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, develop]
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '18'
+
+jobs:
+  # Job 1: Build preview
+  build-preview:
+    name: Build Preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    outputs:
+      preview-url: ${{ steps.deploy.outputs.preview-url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm run bootstrap
+
+      - name: Build frontend for preview
+        run: |
+          cd frontend
+          npm run build
+        env:
+          VITE_API_URL: https://vera-pr-${{ github.event.pull_request.number }}-api.vercel.app
+          VITE_APP_ENV: preview
+
+      - name: Build backend for preview
+        run: |
+          cd backend
+          npm run build
+
+      - name: Deploy frontend to Vercel
+        id: deploy-frontend
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: ./frontend
+          alias-domains: vera-pr-${{ github.event.pull_request.number }}.vercel.app
+
+      - name: Deploy backend to Railway
+        id: deploy-backend
+        run: |
+          # Install Railway CLI
+          npm install -g @railway/cli
+          
+          # Deploy backend
+          cd backend
+          railway deploy --service vera-backend-pr-${{ github.event.pull_request.number }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+      - name: Set preview URL
+        id: deploy
+        run: |
+          echo "preview-url=https://vera-pr-${{ github.event.pull_request.number }}.vercel.app" >> $GITHUB_OUTPUT
+
+  # Job 2: Run preview tests
+  test-preview:
+    name: Test Preview Deployment
+    needs: build-preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm run bootstrap
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps
+
+      - name: Wait for preview deployment
+        run: |
+          echo "Waiting for preview to be ready..."
+          for i in {1..30}; do
+            if curl -f ${{ needs.build-preview.outputs.preview-url }}/health; then
+              echo "Preview is ready!"
+              break
+            fi
+            echo "Attempt $i/30: Preview not ready yet, waiting 10 seconds..."
+            sleep 10
+          done
+
+      - name: Run smoke tests on preview
+        run: npm run test:smoke:preview
+        env:
+          PREVIEW_URL: ${{ needs.build-preview.outputs.preview-url }}
+
+      - name: Run visual regression tests
+        run: npm run test:visual:preview
+        env:
+          PREVIEW_URL: ${{ needs.build-preview.outputs.preview-url }}
+
+      - name: Upload visual diff artifacts
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: visual-diffs-pr-${{ github.event.pull_request.number }}
+          path: tests/visual-diffs/
+          retention-days: 7
+
+  # Job 3: Lighthouse performance audit
+  lighthouse-audit:
+    name: Lighthouse Performance Audit
+    needs: build-preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Wait for preview deployment
+        run: |
+          for i in {1..30}; do
+            if curl -f ${{ needs.build-preview.outputs.preview-url }}; then
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Run Lighthouse audit
+        uses: treosh/lighthouse-ci-action@v10
+        with:
+          urls: |
+            ${{ needs.build-preview.outputs.preview-url }}
+            ${{ needs.build-preview.outputs.preview-url }}/dashboard
+            ${{ needs.build-preview.outputs.preview-url }}/profile
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+  # Job 4: Security scan on preview
+  security-scan-preview:
+    name: Security Scan Preview
+    needs: build-preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Wait for preview deployment
+        run: |
+          for i in {1..30}; do
+            if curl -f ${{ needs.build-preview.outputs.preview-url }}; then
+              break
+            fi
+            sleep 10
+          done
+
+      - name: Run OWASP ZAP security scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: ${{ needs.build-preview.outputs.preview-url }}
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+
+  # Job 5: Bundle size analysis
+  bundle-analysis:
+    name: Bundle Size Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm run bootstrap
+
+      - name: Build with bundle analysis
+        run: |
+          cd frontend
+          npm run build:analyze
+
+      - name: Upload bundle analysis
+        uses: actions/upload-artifact@v3
+        with:
+          name: bundle-analysis-pr-${{ github.event.pull_request.number }}
+          path: frontend/dist/bundle-report.html
+          retention-days: 7
+
+      - name: Comment bundle size
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Read bundle stats
+            const statsPath = path.join('frontend', 'dist', 'stats.json');
+            if (fs.existsSync(statsPath)) {
+              const stats = JSON.parse(fs.readFileSync(statsPath, 'utf8'));
+              const totalSize = (stats.assets.reduce((sum, asset) => sum + asset.size, 0) / 1024).toFixed(2);
+              
+              const comment = `## 📦 Bundle Size Analysis
+              
+              **Total bundle size:** ${totalSize} KB
+              
+              **View detailed analysis:** [Bundle Report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+              
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  # Job 6: Comment with preview links
+  comment-preview:
+    name: Comment Preview Links
+    needs: [build-preview, test-preview, lighthouse-audit]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Comment PR with preview links
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const previewUrl = '${{ needs.build-preview.outputs.preview-url }}';
+            const testStatus = '${{ needs.test-preview.result }}';
+            const lighthouseStatus = '${{ needs.lighthouse-audit.result }}';
+            
+            const statusEmoji = {
+              'success': '✅',
+              'failure': '❌',
+              'cancelled': '⏹️',
+              'skipped': '⏭️'
+            };
+            
+            const comment = `## 🚀 Preview Deployment
+            
+            **Preview URL:** [${previewUrl}](${previewUrl})
+            
+            ### Test Results
+            - **Smoke Tests:** ${statusEmoji[testStatus] || '❓'} ${testStatus}
+            - **Lighthouse Audit:** ${statusEmoji[lighthouseStatus] || '❓'} ${lighthouseStatus}
+            
+            ### Quick Links
+            - 🖥️ [Dashboard](${previewUrl}/dashboard)
+            - 👤 [Profile](${previewUrl}/profile)
+            - 📊 [Energy Monitor](${previewUrl}/energy)
+            - ⚙️ [Settings](${previewUrl}/settings)
+            
+            ### Actions
+            - 📝 [View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            - 🔍 [Lighthouse report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            ---
+            *This preview will be automatically updated when you push new commits to this PR.*
+            `;
+            
+            // Check if there's already a preview comment
+            const comments = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            
+            const existingComment = comments.data.find(comment => 
+              comment.body.includes('## 🚀 Preview Deployment')
+            );
+            
+            if (existingComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                comment_id: existingComment.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  # Job 7: Cleanup on PR close
+  cleanup-preview:
+    name: Cleanup Preview
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed'
+
+    steps:
+      - name: Cleanup Vercel preview
+        run: |
+          # Install Vercel CLI
+          npm install -g vercel
+          
+          # Remove preview deployment
+          vercel remove vera-pr-${{ github.event.pull_request.number }} --yes
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Cleanup Railway preview
+        run: |
+          # Install Railway CLI
+          npm install -g @railway/cli
+          
+          # Remove preview deployment
+          railway service delete vera-backend-pr-${{ github.event.pull_request.number }} --yes
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

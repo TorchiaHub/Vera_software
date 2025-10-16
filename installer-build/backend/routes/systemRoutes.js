@@ -1,0 +1,20 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const systemController_1 = require("../controllers/systemController");
+const errorHandler_1 = require("../middleware/errorHandler");
+const router = (0, express_1.Router)();
+router.get('/monitor', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.getSystemMetrics));
+router.get('/hardware', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.getHardwareInfo));
+router.get('/performance', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.getPerformanceData));
+router.get('/devices', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.getConnectedDevices));
+router.post('/devices', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.addDevice));
+router.put('/devices/:id', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.updateDevice));
+router.delete('/devices/:id', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.removeDevice));
+router.get('/health', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.getSystemHealth));
+router.get('/status', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.getSystemStatus));
+router.get('/notifications', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.getNotifications));
+router.post('/notifications', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.createNotification));
+router.put('/notifications/:id/read', (0, errorHandler_1.asyncHandler)(systemController_1.systemController.markNotificationRead));
+exports.default = router;
+//# sourceMappingURL=systemRoutes.js.map

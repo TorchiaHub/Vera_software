@@ -1,53 +1,540 @@
-# VERA Troubleshooting Guide
+# Troubleshooting Guide
 
-## Overview
+## Common Issues and Solutions
 
-This guide helps you diagnose and resolve common issues encountered while developing, deploying, and using the VERA Environmental Awareness application. Issues are organized by category with step-by-step resolution procedures.
+### Build Issues
 
-## Quick Diagnostics
+#### Tauri Build Failures
 
-### System Health Check
+**Problem**: `tauri build` fails with "failed to resolve dependencies"
+```
+Error: Failed to resolve dependencies in Cargo.toml
+```
 
-Run this comprehensive health check script to identify common issues:
-
+**Solution**:
 ```bash
-#!/bin/bash
-# health-check.sh
+# Clean Rust cache
+cd src-tauri
+cargo clean
 
-echo "=== VERA Health Check ==="
-echo "Date: $(date)"
-echo
+# Update dependencies
+cargo update
 
-# Check Node.js
-echo "Node.js Version:"
-node --version || echo "❌ Node.js not found"
-echo
+# Rebuild
+cargo build
+```
 
-# Check npm
-echo "npm Version:"
-npm --version || echo "❌ npm not found"
-echo
+#### Bundle Creation Fails
 
-# Check database connectivity
-echo "Database Connectivity:"
-if pg_isready -h localhost -p 5432; then
-  echo "✅ PostgreSQL is running"
-else
-  echo "❌ PostgreSQL connection failed"
-fi
-echo
+**Problem**: No installer generated after build
+```
+Error: Bundle creation failed - no NSIS/WiX found
+```
 
-# Check Redis
-echo "Redis Connectivity:"
-if redis-cli ping > /dev/null 2>&1; then
-  echo "✅ Redis is running"
-else
-  echo "❌ Redis connection failed"
-fi
-echo
+**Solution**:
+```powershell
+# Install NSIS (Windows)
+winget install NSIS.NSIS
 
-# Check disk space
-echo "Disk Usage:"
+# Or download from: https://nsis.sourceforge.io/
+# Add to PATH: C:\Program Files (x86)\NSIS
+```
+
+#### React Build Errors
+
+**Problem**: Frontend compilation errors
+```
+Error: Module not found: Can't resolve './components/...'
+```
+
+**Solution**:
+```bash
+# Clear node_modules and reinstall
+rm -rf node_modules package-lock.json
+npm install
+
+# Or use yarn
+rm -rf node_modules yarn.lock  
+yarn install
+```
+
+### Authentication Issues
+
+#### Supabase Connection Failed
+
+**Problem**: Cannot connect to Supabase database
+```
+Error: Invalid API key or URL
+```
+
+**Solution**:
+1. Check environment variables:
+   ```bash
+   # Verify .env file
+   VITE_SUPABASE_URL=your-project-url
+   VITE_SUPABASE_ANON_KEY=your-anon-key
+   ```
+
+2. Verify API keys in Supabase dashboard
+3. Check network connectivity
+
+#### User Session Expired
+
+**Problem**: Users logged out unexpectedly
+```
+Error: Session expired or invalid
+```
+
+**Solution**:
+```typescript
+// Implement session refresh
+const { data: { session }, error } = await supabase.auth.refreshSession()
+if (error) {
+  // Redirect to login
+  router.push('/login')
+}
+```
+
+#### Login Redirect Loops
+
+**Problem**: Infinite redirects between login and dashboard
+```
+Error: Authentication redirect loop detected
+```
+
+**Solution**:
+```typescript
+// Check auth state properly
+const ProtectedRoute = ({ children }) => {
+  const { user, loading } = useAuth()
+  
+  if (loading) return <div>Loading...</div>
+  if (!user) return <Navigate to="/login" replace />
+  
+  return children
+}
+```
+
+### Performance Issues
+
+#### High CPU Usage
+
+**Problem**: Application consuming excessive CPU
+```
+Symptoms: Fan noise, slow system response
+```
+
+**Solutions**:
+1. **Reduce monitoring frequency**:
+   ```typescript
+   // Change from 1s to 5s intervals
+   const MONITORING_INTERVAL = 5000
+   ```
+
+2. **Optimize data collection**:
+   ```typescript
+   // Batch data points
+   const batchSize = 10
+   const dataBuffer = []
+   ```
+
+3. **Disable debug mode**:
+   ```typescript
+   const DEBUG_MODE = false
+   ```
+
+#### Memory Leaks
+
+**Problem**: Memory usage constantly increasing
+```
+Symptoms: Slow performance over time
+```
+
+**Solutions**:
+```typescript
+// Cleanup intervals on component unmount
+useEffect(() => {
+  const interval = setInterval(collectData, 1000)
+  
+  return () => {
+    clearInterval(interval)
+  }
+}, [])
+
+// Clear data buffers periodically  
+const clearOldData = () => {
+  const cutoff = Date.now() - (24 * 60 * 60 * 1000) // 24h
+  dataBuffer = dataBuffer.filter(d => d.timestamp > cutoff)
+}
+```
+
+### System Monitor Issues
+
+#### No Performance Data
+
+**Problem**: System monitoring returns no data
+```
+Error: Unable to collect system metrics
+```
+
+**Platform-specific Solutions**:
+
+**Windows**:
+```rust
+// Check Windows API permissions
+use windows::Win32::System::Performance::*;
+
+// Verify PowerShell execution policy
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+**macOS**:
+```rust
+// Check activity monitor permissions
+use system_configuration::*;
+
+// Grant Full Disk Access in System Preferences
+```
+
+**Linux**:
+```bash
+# Install required packages
+sudo apt-get install lm-sensors
+sudo sensors-detect
+
+# Check permissions for /proc files
+ls -la /proc/cpuinfo /proc/meminfo
+```
+
+#### Inaccurate Power Readings
+
+**Problem**: Power consumption showing 0 or unrealistic values
+```
+Error: Power readings unavailable or incorrect
+```
+
+**Solutions**:
+1. **Check hardware support**:
+   ```bash
+   # Windows - check PowerShell
+   Get-Counter "\Processor Information(_Total)\% Processor Utility"
+   
+   # Linux - check powertop
+   sudo powertop --dump
+   
+   # macOS - check powermetrics  
+   sudo powermetrics -n 1
+   ```
+
+2. **Use fallback calculations**:
+   ```typescript
+   // Estimate power from CPU usage
+   const estimatePower = (cpuUsage: number) => {
+     const basePower = 65 // TDP in watts
+     return basePower * (0.3 + 0.7 * cpuUsage / 100)
+   }
+   ```
+
+### Database Issues
+
+#### SQLite Connection Errors
+
+**Problem**: Cannot access local SQLite database
+```
+Error: database is locked
+```
+
+**Solutions**:
+```rust
+// Use WAL mode for better concurrency
+use rusqlite::{Connection, OpenFlags};
+
+let conn = Connection::open_with_flags(
+    "data.db",
+    OpenFlags::SQLITE_OPEN_READ_WRITE 
+    | OpenFlags::SQLITE_OPEN_CREATE
+    | OpenFlags::SQLITE_OPEN_NO_MUTEX
+)?;
+
+conn.execute("PRAGMA journal_mode=WAL", [])?;
+```
+
+#### Sync Conflicts
+
+**Problem**: Data conflicts between local and remote
+```
+Error: Sync conflict detected
+```
+
+**Solution**:
+```typescript
+// Implement conflict resolution
+const resolveConflict = (local: any, remote: any) => {
+  // Use remote timestamp as tiebreaker
+  return remote.updated_at > local.updated_at ? remote : local
+}
+```
+
+### UI/UX Issues
+
+#### Chart Not Displaying
+
+**Problem**: Energy charts show no data
+```
+Error: Chart component renders empty
+```
+
+**Solutions**:
+1. **Check data format**:
+   ```typescript
+   // Ensure data has required structure
+   const chartData = data.map(point => ({
+     timestamp: new Date(point.timestamp).getTime(),
+     value: Number(point.energy_usage) || 0
+   }))
+   ```
+
+2. **Verify chart library**:
+   ```bash
+   # Reinstall chart dependencies
+   npm uninstall recharts chart.js
+   npm install recharts@latest
+   ```
+
+#### Dark Mode Issues
+
+**Problem**: Colors not updating properly
+```
+Symptoms: White text on white background
+```
+
+**Solution**:
+```css
+/* Ensure proper CSS variables */
+:root {
+  --background: 0 0% 100%;
+  --foreground: 222.2 84% 4.9%;
+}
+
+[data-theme="dark"] {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+}
+```
+
+### Network Issues
+
+#### Offline Mode Not Working
+
+**Problem**: App crashes when internet disconnected
+```
+Error: Network request failed
+```
+
+**Solution**:
+```typescript
+// Implement offline detection
+const useOnlineStatus = () => {
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+  
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true)
+    const handleOffline = () => setIsOnline(false)
+    
+    window.addEventListener('online', handleOnline)
+    window.addEventListener('offline', handleOffline)
+    
+    return () => {
+      window.removeEventListener('online', handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+  
+  return isOnline
+}
+```
+
+#### Slow Data Loading
+
+**Problem**: Dashboard takes long time to load
+```
+Symptoms: Spinner shows for >5 seconds
+```
+
+**Solutions**:
+1. **Implement pagination**:
+   ```sql
+   SELECT * FROM performance_data 
+   WHERE device_id = ? 
+   ORDER BY timestamp DESC 
+   LIMIT 100 OFFSET ?
+   ```
+
+2. **Use data compression**:
+   ```typescript
+   // Compress large datasets
+   const compressData = (data: any[]) => {
+     return data.filter((_, index) => index % 5 === 0) // Sample every 5th point
+   }
+   ```
+
+## Debugging Tools
+
+### Development Mode
+
+**Enable Debug Logging**:
+```typescript
+// Add to main.tsx
+if (process.env.NODE_ENV === 'development') {
+  window.DEBUG = true
+  console.log('Debug mode enabled')
+}
+```
+
+### Tauri Debug Mode
+
+**Open DevTools**:
+```rust
+// In main.rs
+#[cfg(debug_assertions)]
+fn main() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![])
+        .setup(|app| {
+            let window = app.get_window("main").unwrap();
+            window.open_devtools();
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+```
+
+### Performance Profiling
+
+**Chrome DevTools**:
+1. Open DevTools (F12)
+2. Go to Performance tab
+3. Click Record
+4. Interact with app
+5. Stop recording and analyze
+
+**Rust Profiling**:
+```bash
+# Install flamegraph
+cargo install flamegraph
+
+# Profile the application
+sudo flamegraph -- ./target/release/vera-app
+```
+
+## Log Analysis
+
+### Application Logs
+
+**Location**:
+- Windows: `%APPDATA%\com.vera.app\logs\`
+- macOS: `~/Library/Logs/com.vera.app/`
+- Linux: `~/.local/share/com.vera.app/logs/`
+
+**Log Levels**:
+```rust
+// Configure logging in main.rs
+use tracing::{info, warn, error, debug};
+use tracing_subscriber;
+
+fn init_logging() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+}
+```
+
+### Database Query Logging
+
+**Enable SQL Logging**:
+```typescript
+// Add to Supabase client
+const supabase = createClient(url, key, {
+  db: {
+    schema: 'public',
+  },
+  debug: process.env.NODE_ENV === 'development'
+})
+```
+
+## Emergency Recovery
+
+### Reset to Factory Settings
+
+**Clear All Data**:
+```bash
+# Stop application first
+# Then remove data directories
+
+# Windows
+rd /s /q "%APPDATA%\com.vera.app"
+
+# macOS  
+rm -rf ~/Library/Application\ Support/com.vera.app
+
+# Linux
+rm -rf ~/.local/share/com.vera.app
+```
+
+### Database Recovery
+
+**Backup and Restore**:
+```sql
+-- Create backup
+.backup backup.db
+
+-- Restore from backup  
+.restore backup.db
+```
+
+### Configuration Reset
+
+**Reset Config Files**:
+```json
+// Delete and recreate config.json
+{
+  "monitoring_interval": 5000,
+  "data_retention_days": 30,
+  "sync_enabled": true,
+  "debug_mode": false
+}
+```
+
+## Getting Help
+
+### Support Channels
+- **GitHub Issues**: https://github.com/TorchiaHub/Vera_software/issues
+- **Discussions**: https://github.com/TorchiaHub/Vera_software/discussions
+- **Documentation**: Check latest docs/ folder
+
+### Bug Reports
+
+**Include This Information**:
+1. Operating System and version
+2. Application version
+3. Steps to reproduce
+4. Expected vs actual behavior
+5. Error messages/logs
+6. Screenshots if relevant
+
+**Log Collection**:
+```bash
+# Collect system info
+# Windows
+systeminfo > system-info.txt
+
+# macOS
+system_profiler SPHardwareDataType > system-info.txt
+
+# Linux  
+uname -a && lscpu && free -h > system-info.txt
+```
 df -h / | tail -1 | awk '{print $5}' | sed 's/%//' | {
   read usage
   if [ $usage -gt 80 ]; then
